@@ -512,8 +512,14 @@ function App() {
              </div>
              
              <div className="flex items-center gap-2">
-                 {bucketStats && bucketStats.bucket === currentBucket && (
-                     <div className="hidden md:flex items-center gap-4 text-xs text-muted-foreground mr-4 border-r border-border pr-4 h-8">
+                 {statsLoading ? (
+                    <div className="hidden md:flex items-center gap-2 text-xs text-muted-foreground mr-4 border-r border-border pr-4 h-8">
+                        <RefreshCw size={14} className="animate-spin" />
+                        <span>Calculating stats...</span>
+                    </div>
+                 ) : (
+                    bucketStats && bucketStats.bucket === currentBucket && (
+                     <div className="hidden md:flex items-center gap-4 text-xs text-muted-foreground mr-4 border-r border-border pr-4 h-8 animate-in fade-in">
                          <div className="flex flex-col items-end leading-none gap-1">
                              <span className="font-medium text-foreground">{formatBytes(bucketStats.size)}</span>
                              <span>Total Size</span>
@@ -523,6 +529,7 @@ function App() {
                              <span>Objects</span>
                          </div>
                      </div>
+                    )
                  )}
                  <Button variant="outline" size="sm" onClick={handleRefresh} disabled={!currentBucket}>
                      <RefreshCw size={16} className={loading ? "animate-spin" : ""} />
