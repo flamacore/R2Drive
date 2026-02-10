@@ -59,6 +59,32 @@ function App() {
     }
   }, []);
 
+  const [lastSelectedKey, setLastSelectedKey] = useState<string | null>(null);
+
+  // Keyboard Shortcuts
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+        // Ctrl+A: Select All
+        if ((e.ctrlKey || e.metaKey) && e.key === 'a') {
+            e.preventDefault();
+            toggleAll(true); // Force select all
+        }
+        // Escape: Deselect All
+        if (e.key === 'Escape') {
+            setSelection(new Set());
+        }
+        // Delete: Delete Selected
+        if (e.key === 'Delete') {
+            if (selection.size > 0) {
+                handleDelete();
+            }
+        }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [selection, files, folders]);
+
   useEffect(() => {
     let unlistenDrop: (() => void) | undefined;
     let unlistenHover: (() => void) | undefined;
@@ -67,6 +93,8 @@ function App() {
     const setupListener = async () => {
         const appWindow = getCurrentWindow();
         
+        console.log("Setting up drag/drop listeners");
+
         unlistenHover = await appWindow.listen('tauri://file-drop-hover', (event) => {
             console.log('File Hover:', event);
             setIsDragging(true);
@@ -78,10 +106,11 @@ function App() {
         });
 
         unlistenDrop = await appWindow.listen('tauri://file-drop', async (event) => {
-           console.log('File Drop:', event);
+           console.log('File Drop Event:', event);
            setIsDragging(false);
            if (authenticated && currentBucket) {
                const droppedFiles = event.payload as string[];
+               console.log("Files dropped:", droppedFiles);
                if (droppedFiles && droppedFiles.length > 0) {
                    await processUploads(droppedFiles);
                }
@@ -279,10 +308,61 @@ function App() {
           newSet.add(key);
       }
       setSelection(newSet);
+      setLastSelectedKey(key);
   }
 
-  const toggleAll = () => {
-      if (selection.size === files.length + folders.length) {
+  const handleRowClick = (key: string, e: React.MouseEvent) => {
+      // Prevent selection when clicking directly on interactive elements handled elsewhere
+      // (Though usually we handle this by e.stopPropagation on the child)
+      
+      const allItems = [...folders.map(f => f.key), ...files.map(f => f.key)];
+      let newSelection = new Set<string>();
+
+      if (e.ctrlKey || e.metaKey) {
+          // Ctrl+Click: Toggle
+          newSelection = new Set(selection);
+          if (newSelection.has(key)) {
+              newSelection.delete(key);
+          } else {
+              newSelection.add(key);
+          }
+          setLastSelectedKey(key);
+      } else if (e.shiftKey && lastSelectedKey) {
+          // Shift+Click: Range
+          const lastIdx = allItems.indexOf(lastSelectedKey);
+          const currentIdx = allItems.indexOf(key);
+          
+          if (lastIdx !== -1 && currentIdx !== -1) {
+              const start = Math.min(lastIdx, currentIdx);
+              const end = Math.max(lastIdx, currentIdx);
+              
+              // If we want to ADD to selection or REPLACE?
+              // Windows Explorer usually replaces the selection with the range,
+              // unless Ctrl is also held (but Ctrl+Shift is rare).
+              // Let's assume standard Shift click replaces selection with range
+              // BUT keeps the anchor? No, standard is range replaces.
+              
+              // Actually, standard behavior often keeps previous "others" if you used ctrl before?
+              // Let's do simple: Shift click sets selection to the range.
+              newSelection = new Set();
+              for(let i = start; i <= end; i++) {
+                  newSelection.add(allItems[i]);
+              }
+          } else {
+              newSelection.add(key);
+              setLastSelectedKey(key);
+          }
+      } else {
+          // Single Click: Select Only this
+          newSelection.add(key);
+          setLastSelectedKey(key);
+      }
+
+      setSelection(newSelection);
+  }
+
+  const toggleAll = (forceSelect = false) => {
+      if (!forceSelect && selection.size === files.length + folders.length) {
           setSelection(new Set());
       } else {
           const allKeys = [...folders.map(f => f.key), ...files.map(f => f.key)];
@@ -444,24 +524,34 @@ function App() {
                         {/* Folder List */}
                         {folders.map((folder) => {
                             const displayName = folder.key.replace(currentPath, "").replace("/", "");
+                            const isSelected = selection.has(folder.key);
                             return (
-                                <TableRow key={folder.key} className="group">
-                                    <TableCell onClick={(e) => e.stopPropagation()}>
+                                <TableRow 
+                                    key={folder.key} 
+                                    className={`group cursor-pointer ${isSelected ? "bg-accent/50 selected" : ""}`}
+                                    onClick={(e) => handleRowClick(folder.key, e)}
+                                    // Double click to navigate
+                                    onDoubleClick={(e) => {
+                                        e.preventDefault();
+                                        handleNavigate(folder.key);
+                                    }}
+                                >
+                                    <TableCell onClick={(e) => { e.stopPropagation(); toggleSelection(folder.key); }}>
                                         <Checkbox 
-                                            checked={selection.has(folder.key)}
-                                            onCheckedChange={() => toggleSelection(folder.key)}
+                                            checked={isSelected}
+                                            // onCheckedChange handles click automatically
                                         />
                                     </TableCell>
-                                    <TableCell className="cursor-pointer" onClick={() => handleNavigate(folder.key)}>
+                                    <TableCell>
                                         <Folder size={18} className="text-blue-500 fill-blue-500/20" />
                                     </TableCell>
-                                    <TableCell className="font-medium cursor-pointer" onClick={() => handleNavigate(folder.key)}>
+                                    <TableCell className="font-medium">
                                         {displayName}
                                     </TableCell>
                                     <TableCell className="text-muted-foreground">-</TableCell>
                                     <TableCell className="text-muted-foreground">-</TableCell>
                                     <TableCell>
-                                        <Button variant="ghost" size="icon" className="h-8 w-8 opacity-0 group-hover:opacity-100" onClick={() => handleDelete()}>
+                                        <Button variant="ghost" size="icon" className="h-8 w-8 opacity-0 group-hover:opacity-100" onClick={(e) => { e.stopPropagation(); handleDelete(); }}>
                                              {/* <Trash2 size={14} className="text-muted-foreground hover:text-destructive" /> */}
                                         </Button>
                                     </TableCell>
@@ -472,12 +562,17 @@ function App() {
                         {/* File List */}
                         {files.map((file) => {
                              const displayName = file.key.replace(currentPath, "");
+                             const isSelected = selection.has(file.key);
                              return (
-                                <TableRow key={file.key} className="group">
-                                    <TableCell onClick={(e) => e.stopPropagation()}>
+                                <TableRow 
+                                    key={file.key} 
+                                    className={`group cursor-pointer ${isSelected ? "bg-accent/50 selected" : ""}`}
+                                    onClick={(e) => handleRowClick(file.key, e)}
+                                >
+                                    <TableCell onClick={(e) => { e.stopPropagation(); toggleSelection(file.key); }}>
                                         <Checkbox 
-                                            checked={selection.has(file.key)}
-                                            onCheckedChange={() => toggleSelection(file.key)}
+                                            checked={isSelected}
+                                            // onCheckedChange handled by parent click or explicit logic if needed, but simple checkbox click propagation works for toggle
                                         />
                                     </TableCell>
                                     <TableCell>
