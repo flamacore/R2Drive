@@ -5,8 +5,9 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from ".
 import { initR2Client, listBuckets, listObjects, uploadObject, downloadObject, createFolder, deleteObjects } from "./services/r2Service";
 import { open, save, message } from "@tauri-apps/plugin-dialog";
 import { listen } from "@tauri-apps/api/event";
-import { Folder, File, Download, Trash2, Upload, Plus, ChevronRight, Home, ArrowUp, RefreshCw, FolderPlus } from "lucide-react";
+import { Folder, File, Download, Trash2, Upload, Plus, ChevronRight, Home, ArrowUp, RefreshCw, FolderPlus, X } from "lucide-react";
 import { Checkbox } from "@/components/ui/checkbox"
+import { Progress } from "@/components/ui/progress"
 
 interface FileItem {
   key: string;
@@ -31,6 +32,12 @@ function App() {
   const [folders, setFolders] = useState<FileItem[]>([]);
   const [selection, setSelection] = useState<Set<string>>(new Set());
   const [isDragging, setIsDragging] = useState(false);
+  const [uploadStatus, setUploadStatus] = useState<{
+    total: number;
+    current: number;
+    filename: string;
+    isActive: boolean;
+  }>({ total: 0, current: 0, filename: "", isActive: false });
 
   useEffect(() => {
     const savedAccountId = localStorage.getItem("accountId");
@@ -53,50 +60,64 @@ function App() {
   }, []);
 
   useEffect(() => {
-    let unlisten: (() => void) | undefined;
+    let unlistenDrop: (() => void) | undefined;
+    let unlistenHover: (() => void) | undefined;
+    let unlistenCancel: (() => void) | undefined;
+
     async function setupListener() {
-        unlisten = await listen('tauri://file-drop', async (event) => {
+        unlistenHover = await listen('tauri://file-drop-hover', () => {
+            setIsDragging(true);
+        });
+
+        unlistenCancel = await listen('tauri://file-drop-cancelled', () => {
+            setIsDragging(false);
+        });
+
+        unlistenDrop = await listen('tauri://file-drop', async (event) => {
            setIsDragging(false);
            if (authenticated && currentBucket) {
                const droppedFiles = event.payload as string[];
                if (droppedFiles && droppedFiles.length > 0) {
-                   setLoading(true);
-                   let successCount = 0;
-                   let failCount = 0;
-                   
-                   for(const filePath of droppedFiles) {
-                      const fileName = filePath.split(/[\\/]/).pop() || "unknown";
-                      const fullKey = currentPath + fileName;
-                      try {
-                        await uploadObject(currentBucket, fullKey, filePath);
-                        successCount++;
-                      } catch (e) {
-                          failCount++;
-                          console.error("Failed to upload " + fileName + ": " + e);
-                      }
-                   }
-                   
-                   await loadFiles(currentBucket, currentPath);
-                   if (failCount > 0) {
-                       await message(`Uploaded ${successCount} files. Failed: ${failCount}`, { kind: 'warning' });
-                   } else {
-                       // await message(`Uploaded ${successCount} files.`, { kind: 'info' });
-                   }
-                   setLoading(false);
+                   await processUploads(droppedFiles);
                }
            }
         });
-        
-        // Listen for drag enter to show overlay
-         /*  Note: Tauri v2 doesn't expose easy drag-enter js events for the whole window easily without custom rust logic or webview logic.
-             We will just rely on the OS drop. 
-         */
     }
     setupListener();
     return () => {
-        if (unlisten) unlisten();
+        if (unlistenDrop) unlistenDrop();
+        if (unlistenHover) unlistenHover();
+        if (unlistenCancel) unlistenCancel();
     };
   }, [authenticated, currentBucket, currentPath]);
+
+  const processUploads = async (filePaths: string[]) => {
+      setUploadStatus({ total: filePaths.length, current: 0, filename: "", isActive: true });
+      let successCount = 0;
+      let failCount = 0;
+      
+      for(let i = 0; i < filePaths.length; i++) {
+        const filePath = filePaths[i];
+        const fileName = filePath.split(/[\\/]/).pop() || "unknown";
+        setUploadStatus(prev => ({ ...prev, current: i + 1, filename: fileName }));
+        
+        const fullKey = currentPath + fileName;
+        try {
+            await uploadObject(currentBucket, fullKey, filePath);
+            successCount++;
+        } catch (e) {
+            failCount++;
+            console.error("Failed to upload " + fileName + ": " + e);
+        }
+      }
+      
+      await loadFiles(currentBucket, currentPath);
+      setUploadStatus(prev => ({ ...prev, isActive: false }));
+
+      if (failCount > 0) {
+          await message(`Uploaded ${successCount} files. Failed: ${failCount}`, { kind: 'warning' });
+      }
+  }
 
   const authenticate = async () => {
     setLoading(true);
@@ -233,26 +254,11 @@ function App() {
       });
       
       if (filePaths) {
-          /* 
-             open() returns explicit string in single mode, 
-             or string[] in multiple mode? 
-             Wait, Tauri v2 documentation says: 
-             `open` returns null | string | string[] depending on options.
-          */
          const paths = Array.isArray(filePaths) ? filePaths : [filePaths];
-         setLoading(true);
-         for(const path of paths) {
-            const fileName = path.split(/[\\/]/).pop() || "unknown";
-            const fullKey = currentPath + fileName;
-            await uploadObject(currentBucket, fullKey, path);
-         }
-         loadFiles(currentBucket, currentPath);
-         setLoading(false);
-        //  await message("Upload successful", { kind: 'info' });
+         await processUploads(paths);
       }
     } catch (error) {
       await message("Upload failed: " + (error as Error).message, { kind: 'error' });
-      setLoading(false);
     }
   };
 
@@ -305,7 +311,7 @@ function App() {
 
   // Render App
   return (
-    <div className="flex h-screen bg-background text-foreground overflow-hidden">
+    <div className="relative flex h-screen bg-background text-foreground overflow-hidden">
       {/* Sidebar */}
       <div className="w-64 bg-card border-r border-border flex flex-col">
           <div className="p-4 border-b border-border flex items-center gap-2">
@@ -504,6 +510,38 @@ function App() {
              <div>{loading ? "Syncing..." : "Up to date"}</div>
          </div>
       </div>
+
+      {/* Drag Overlay */}
+      {isDragging && (
+        <div className="absolute inset-0 bg-primary/20 backdrop-blur-sm z-50 flex items-center justify-center border-4 border-primary border-dashed m-4 rounded-xl animate-in fade-in duration-200">
+            <div className="bg-background/90 p-8 rounded-xl shadow-xl flex flex-col items-center gap-4">
+                <div className="h-16 w-16 bg-primary/20 rounded-full flex items-center justify-center">
+                    <Upload size={32} className="text-primary" />
+                </div>
+                <h3 className="text-2xl font-bold">Drop files to upload</h3>
+                <p className="text-muted-foreground">Upload to {currentBucket}/{currentPath}</p>
+            </div>
+        </div>
+      )}
+
+      {/* Progress Overlay */}
+      {uploadStatus.isActive && (
+          <div className="absolute bottom-10 right-10 w-80 bg-card border border-border shadow-2xl rounded-xl overflow-hidden z-50 animate-in slide-in-from-bottom-5 duration-300">
+              <div className="p-4 bg-muted/30 border-b border-border flex items-center justify-between">
+                  <span className="font-semibold text-sm">Uploading...</span>
+                  <div className="text-xs text-muted-foreground font-mono">{uploadStatus.current} / {uploadStatus.total}</div>
+              </div>
+              <div className="p-5 space-y-4">
+                  <div className="space-y-1">
+                      <div className="flex justify-between text-xs">
+                          <span className="truncate max-w-[180px] font-medium">{uploadStatus.filename}</span>
+                          <span className="text-muted-foreground">{Math.round((uploadStatus.current / uploadStatus.total) * 100)}%</span>
+                      </div>
+                      <Progress value={(uploadStatus.current / uploadStatus.total) * 100} className="h-2" />
+                  </div>
+              </div>
+          </div>
+      )}
     </div>
   );
 }
