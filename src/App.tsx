@@ -4,7 +4,7 @@ import { Input } from "./components/ui/input";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "./components/ui/table";
 import { initR2Client, listBuckets, listObjects, uploadObject, downloadObject, createFolder, deleteObjects } from "./services/r2Service";
 import { open, save, message } from "@tauri-apps/plugin-dialog";
-import { listen } from "@tauri-apps/api/event";
+import { getCurrentWindow } from "@tauri-apps/api/window"; // Add this import
 import { Folder, File, Download, Trash2, Upload, Plus, ChevronRight, Home, ArrowUp, RefreshCw, FolderPlus, X } from "lucide-react";
 import { Checkbox } from "@/components/ui/checkbox"
 import { Progress } from "@/components/ui/progress"
@@ -64,26 +64,35 @@ function App() {
     let unlistenHover: (() => void) | undefined;
     let unlistenCancel: (() => void) | undefined;
 
-    async function setupListener() {
-        unlistenHover = await listen('tauri://file-drop-hover', () => {
+    const setupListener = async () => {
+        const appWindow = getCurrentWindow();
+        
+        unlistenHover = await appWindow.listen('tauri://file-drop-hover', (event) => {
+            console.log('File Hover:', event);
             setIsDragging(true);
         });
 
-        unlistenCancel = await listen('tauri://file-drop-cancelled', () => {
+        unlistenCancel = await appWindow.listen('tauri://file-drop-cancelled', (event) => {
+            console.log('File Cancelled:', event);
             setIsDragging(false);
         });
 
-        unlistenDrop = await listen('tauri://file-drop', async (event) => {
+        unlistenDrop = await appWindow.listen('tauri://file-drop', async (event) => {
+           console.log('File Drop:', event);
            setIsDragging(false);
            if (authenticated && currentBucket) {
                const droppedFiles = event.payload as string[];
                if (droppedFiles && droppedFiles.length > 0) {
                    await processUploads(droppedFiles);
                }
+           } else {
+               console.warn("Drop ignored: Not authenticated or no bucket selected");
            }
         });
-    }
+    };
+    
     setupListener();
+
     return () => {
         if (unlistenDrop) unlistenDrop();
         if (unlistenHover) unlistenHover();
@@ -513,7 +522,7 @@ function App() {
 
       {/* Drag Overlay */}
       {isDragging && (
-        <div className="absolute inset-0 bg-primary/20 backdrop-blur-sm z-50 flex items-center justify-center border-4 border-primary border-dashed m-4 rounded-xl animate-in fade-in duration-200">
+        <div className="absolute inset-0 bg-primary/20 backdrop-blur-sm z-50 flex items-center justify-center border-4 border-primary border-dashed m-4 rounded-xl animate-in fade-in duration-200 pointer-events-none">
             <div className="bg-background/90 p-8 rounded-xl shadow-xl flex flex-col items-center gap-4">
                 <div className="h-16 w-16 bg-primary/20 rounded-full flex items-center justify-center">
                     <Upload size={32} className="text-primary" />
