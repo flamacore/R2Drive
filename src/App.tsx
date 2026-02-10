@@ -2,7 +2,7 @@ import { useState, useEffect } from "react";
 import { Button } from "./components/ui/button";
 import { Input } from "./components/ui/input";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "./components/ui/table";
-import { initR2Client, listBuckets, listObjects, uploadObject, downloadObject, createFolder, deleteObjects, deletePrefix } from "./services/r2Service";
+import { initR2Client, listBuckets, listObjects, uploadObject, downloadObject, createFolder, deleteObjects, deletePrefix, getBucketStats } from "./services/r2Service";
 import { open, save, message } from "@tauri-apps/plugin-dialog";
 import { getCurrentWindow } from "@tauri-apps/api/window"; // Add this import
 import { Folder, File, Download, Trash2, Upload, ChevronRight, Home, ArrowUp, RefreshCw, FolderPlus } from "lucide-react";
@@ -24,6 +24,8 @@ function App() {
   const [accountId, setAccountId] = useState("");
   const [authenticated, setAuthenticated] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [statsLoading, setStatsLoading] = useState(false);
+  const [bucketStats, setBucketStats] = useState<{size: number, count: number, bucket: string} | null>(null);
 
   // Browser State
   const [currentBucket, setCurrentBucket] = useState<string>("");
@@ -193,6 +195,14 @@ function App() {
     }
   };
 
+  const formatBytes = (bytes: number) => {
+    if (bytes === 0) return '0 B';
+    const k = 1024;
+    const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+  }
+
   const loadFiles = async (bucket: string, prefix: string) => {
     if(!bucket) return;
     setLoading(true);
@@ -221,10 +231,23 @@ function App() {
     }
   };
 
+  const loadStats = async (bucket: string) => {
+      setStatsLoading(true);
+      try {
+          const stats = await getBucketStats(bucket);
+          setBucketStats({ ...stats, bucket });
+      } catch (e) {
+          console.error("Failed to load stats", e);
+      } finally {
+          setStatsLoading(false);
+      }
+  }
+
   const handleBucketSelect = (bucket: string) => {
       setCurrentBucket(bucket);
       setCurrentPath("");
       loadFiles(bucket, "");
+      loadStats(bucket);
   }
 
   const handleNavigate = (folderKey: string) => {
@@ -489,6 +512,18 @@ function App() {
              </div>
              
              <div className="flex items-center gap-2">
+                 {bucketStats && bucketStats.bucket === currentBucket && (
+                     <div className="hidden md:flex items-center gap-4 text-xs text-muted-foreground mr-4 border-r border-border pr-4 h-8">
+                         <div className="flex flex-col items-end leading-none gap-1">
+                             <span className="font-medium text-foreground">{formatBytes(bucketStats.size)}</span>
+                             <span>Total Size</span>
+                         </div>
+                         <div className="flex flex-col items-end leading-none gap-1">
+                             <span className="font-medium text-foreground">{bucketStats.count.toLocaleString()}</span>
+                             <span>Objects</span>
+                         </div>
+                     </div>
+                 )}
                  <Button variant="outline" size="sm" onClick={handleRefresh} disabled={!currentBucket}>
                      <RefreshCw size={16} className={loading ? "animate-spin" : ""} />
                  </Button>
@@ -625,7 +660,7 @@ function App() {
                                     </TableCell>
                                     <TableCell className="font-medium">{displayName}</TableCell>
                                     <TableCell className="text-muted-foreground text-xs">
-                                        {(file.size || 0 / 1024).toFixed(1)} KB
+                                        {formatBytes(file.size || 0)}
                                     </TableCell>
                                     <TableCell className="text-muted-foreground text-xs">
                                         {file.lastModified?.toLocaleDateString()}

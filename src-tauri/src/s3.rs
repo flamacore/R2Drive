@@ -235,8 +235,44 @@ pub async fn upload_file(bucket: String, key: String, path: String, state: State
     Ok(())
 }
 
-#[tauri::command]
-pub async fn download_file(bucket: String, key: String, save_path: String, state: State<'_, AppState>) -> Result<(), String> {
+#[tauri::command]pub async fn get_bucket_stats(bucket: String, state: State<'_, AppState>) -> Result<HashMap<String, String>, String> {
+    let client = {
+        let guard = state.client.lock().unwrap();
+        guard.as_ref().ok_or("Client not initialized")?.clone()
+    };
+
+    let mut total_size: i64 = 0;
+    let mut object_count: i64 = 0;
+    let mut continuation_token = None;
+
+    loop {
+        let resp = client.list_objects_v2()
+            .bucket(&bucket)
+            .set_continuation_token(continuation_token)
+            .send()
+            .await
+            .map_err(|e| e.to_string())?;
+
+        for obj in resp.contents() {
+            total_size += obj.size().unwrap_or(0);
+            object_count += 1;
+        }
+
+        if resp.is_truncated().unwrap_or(false) {
+            continuation_token = resp.next_continuation_token;
+        } else {
+            break;
+        }
+    }
+
+    let mut result = HashMap::new();
+    result.insert("size".to_string(), total_size.to_string());
+    result.insert("count".to_string(), object_count.to_string());
+    
+    Ok(result)
+}
+
+#[tauri::command]pub async fn download_file(bucket: String, key: String, save_path: String, state: State<'_, AppState>) -> Result<(), String> {
     let client = {
         let guard = state.client.lock().unwrap();
         guard.as_ref().ok_or("Client not initialized")?.clone()

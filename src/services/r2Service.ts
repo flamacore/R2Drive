@@ -50,3 +50,11 @@ export const deletePrefix = async (bucket: String, prefix: string) => {
   await invoke("delete_prefix", { bucket, prefix });
 };
 
+export const getBucketStats = async (bucket: string) => {
+  const res = await invoke<{size: string, count: string}>("get_bucket_stats", { bucket });
+  return {
+      size: parseInt(res.size),
+      count: parseInt(res.count)
+  };
+};
+

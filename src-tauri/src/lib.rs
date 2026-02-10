@@ -25,6 +25,7 @@ pub fn run() {
             s3::list_objects,
             s3::delete_objects,
             s3::delete_prefix,
+            s3::get_bucket_stats,
             s3::create_folder,
             s3::upload_file,
             s3::download_file
