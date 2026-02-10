@@ -95,21 +95,29 @@ function App() {
         
         console.log("Setting up drag/drop listeners");
 
-        unlistenHover = await appWindow.listen('tauri://file-drop-hover', (event) => {
-            console.log('File Hover:', event);
+        unlistenHover = await appWindow.listen('tauri://drag-enter', (event) => {
+            console.log('Drag Enter:', event);
             setIsDragging(true);
         });
-
-        unlistenCancel = await appWindow.listen('tauri://file-drop-cancelled', (event) => {
-            console.log('File Cancelled:', event);
-            setIsDragging(false);
+        
+        // Also listen for drag-leave to hide the overlay
+        // Note: drag-leave can be flaky if it leaves to a child element, 
+        // but the overlay covers everything and is pointer-events-none, 
+        // which usually helps.
+        unlistenCancel = await appWindow.listen('tauri://drag-leave', (event) => {
+             console.log('Drag Leave:', event);
+             setIsDragging(false);
         });
 
-        unlistenDrop = await appWindow.listen('tauri://file-drop', async (event) => {
-           console.log('File Drop Event:', event);
+        unlistenDrop = await appWindow.listen('tauri://drag-drop', async (event) => {
+           console.log('Drag Drop Event:', event);
            setIsDragging(false);
+           
            if (authenticated && currentBucket) {
-               const droppedFiles = event.payload as string[];
+               // payload structure in v2: { paths: string[], position: { x, y } }
+               const payload = event.payload as { paths: string[] };
+               const droppedFiles = payload.paths;
+
                console.log("Files dropped:", droppedFiles);
                if (droppedFiles && droppedFiles.length > 0) {
                    await processUploads(droppedFiles);
