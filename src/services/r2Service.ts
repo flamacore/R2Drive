@@ -42,6 +42,11 @@ export const downloadObject = async (bucket: string, key: string, savePath: stri
   await invoke("download_file", { bucket, key, savePath });
 };
 
-export const deleteObjects = async (bucket: string, keys: string[]) => {
+export const deleteObjects = async (bucket: String, keys: string[]) => {
   await invoke("delete_objects", { bucket, keys });
 };
+
+export const deletePrefix = async (bucket: String, prefix: string) => {
+  await invoke("delete_prefix", { bucket, prefix });
+};
+

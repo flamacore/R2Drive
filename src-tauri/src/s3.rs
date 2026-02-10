@@ -162,6 +162,58 @@ pub async fn delete_objects(bucket: String, keys: Vec<String>, state: State<'_, 
     Ok(())
 }
 
+#[tauri::command]
+pub async fn delete_prefix(bucket: String, prefix: String, state: State<'_, AppState>) -> Result<(), String> {
+    let client = {
+        let guard = state.client.lock().unwrap();
+        guard.as_ref().ok_or("Client not initialized")?.clone()
+    };
+
+    // List all objects with prefix
+    let mut continuation_token = None;
+    let mut all_keys = Vec::new();
+
+    loop {
+        let resp = client.list_objects_v2()
+            .bucket(&bucket)
+            .prefix(&prefix)
+            .set_continuation_token(continuation_token)
+            .send()
+            .await
+            .map_err(|e| e.to_string())?;
+        
+        for obj in resp.contents() {
+            if let Some(k) = obj.key() {
+                all_keys.push(ObjectIdentifier::builder().key(k).build().unwrap());
+            }
+        }
+
+        if resp.is_truncated().unwrap_or(false) {
+            continuation_token = resp.next_continuation_token.clone();
+        } else {
+            break;
+        }
+    }
+
+    if all_keys.is_empty() {
+        return Ok(());
+    }
+
+    // Delete in chunks
+    for chunk in all_keys.chunks(1000) {
+         let delete = Delete::builder().set_objects(Some(chunk.to_vec())).build().unwrap();
+         client.delete_objects()
+             .bucket(&bucket)
+             .delete(delete)
+             .send()
+             .await
+             .map_err(|e| e.to_string())?;
+    }
+
+    Ok(())
+}
+
+
 
 #[tauri::command]
 pub async fn upload_file(bucket: String, key: String, path: String, state: State<'_, AppState>) -> Result<(), String> {

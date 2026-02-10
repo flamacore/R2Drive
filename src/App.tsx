@@ -2,10 +2,10 @@ import { useState, useEffect } from "react";
 import { Button } from "./components/ui/button";
 import { Input } from "./components/ui/input";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "./components/ui/table";
-import { initR2Client, listBuckets, listObjects, uploadObject, downloadObject, createFolder, deleteObjects } from "./services/r2Service";
+import { initR2Client, listBuckets, listObjects, uploadObject, downloadObject, createFolder, deleteObjects, deletePrefix } from "./services/r2Service";
 import { open, save, message } from "@tauri-apps/plugin-dialog";
 import { getCurrentWindow } from "@tauri-apps/api/window"; // Add this import
-import { Folder, File, Download, Trash2, Upload, Plus, ChevronRight, Home, ArrowUp, RefreshCw, FolderPlus, X } from "lucide-react";
+import { Folder, File, Download, Trash2, Upload, ChevronRight, Home, ArrowUp, RefreshCw, FolderPlus } from "lucide-react";
 import { Checkbox } from "@/components/ui/checkbox"
 import { Progress } from "@/components/ui/progress"
 
@@ -203,12 +203,12 @@ function App() {
         key: obj.key,
         size: parseInt(obj.size) || 0,
         lastModified: new Date(obj.last_modified),
-        type: "file"
+        type: "file" as const
       })).filter(f => f.key !== prefix); // Filter out the folder placeholder itself
 
       const folderItems: FileItem[] = result.folders.map(obj => ({
         key: obj.key,
-        type: "folder"
+        type: "folder" as const
       }));
 
       setFiles(fileItems);
@@ -278,15 +278,50 @@ function App() {
   const handleDelete = async () => {
     if (selection.size === 0) return;
     if (!confirm(`Delete ${selection.size} items?`)) return;
-
+    
+    setLoading(true);
     try {
-        await deleteObjects(currentBucket, Array.from(selection));
+        const selectedFiles = files.filter(f => selection.has(f.key)).map(f => f.key);
+        const selectedFolders = folders.filter(f => selection.has(f.key)).map(f => f.key);
+
+        if (selectedFiles.length > 0) {
+            await deleteObjects(currentBucket, selectedFiles);
+        }
+
+        if (selectedFolders.length > 0) {
+            for (const folderKey of selectedFolders) {
+                await deletePrefix(currentBucket, folderKey);
+            }
+        }
+
         loadFiles(currentBucket, currentPath);
         // await message("Deleted " + selection.size + " items.", { kind: 'info' });
+        setSelection(new Set());
     } catch (error) {
         await message("Delete failed: " + (error as Error).message, { kind: 'error' });
+    } finally {
+        setLoading(false);
     }
   };
+
+  // Context Menu
+  const [contextMenu, setContextMenu] = useState<{ x: number; y: number; itemKey: string; type: "file" | "folder" } | null>(null);
+
+  const handleContextMenu = (e: React.MouseEvent, key: string, type: "file" | "folder") => {
+      e.preventDefault();
+      // If the item is not selected, select it (exclusive)
+      if (!selection.has(key)) {
+          setSelection(new Set([key]));
+          setLastSelectedKey(key);
+      }
+      setContextMenu({ x: e.clientX, y: e.clientY, itemKey: key, type });
+  };
+
+  useEffect(() => {
+      const handleClick = () => setContextMenu(null);
+      window.addEventListener("click", handleClick);
+      return () => window.removeEventListener("click", handleClick);
+  }, []);
 
   const handleUpload = async () => {
     if (!currentBucket) {
@@ -538,6 +573,7 @@ function App() {
                                     key={folder.key} 
                                     className={`group cursor-pointer ${isSelected ? "bg-accent/50 selected" : ""}`}
                                     onClick={(e) => handleRowClick(folder.key, e)}
+                                    onContextMenu={(e) => handleContextMenu(e, folder.key, "folder")}
                                     // Double click to navigate
                                     onDoubleClick={(e) => {
                                         e.preventDefault();
@@ -576,6 +612,7 @@ function App() {
                                     key={file.key} 
                                     className={`group cursor-pointer ${isSelected ? "bg-accent/50 selected" : ""}`}
                                     onClick={(e) => handleRowClick(file.key, e)}
+                                    onContextMenu={(e) => handleContextMenu(e, file.key, "file")}
                                 >
                                     <TableCell onClick={(e) => { e.stopPropagation(); toggleSelection(file.key); }}>
                                         <Checkbox 
@@ -650,6 +687,51 @@ function App() {
                           <span className="text-muted-foreground">{Math.round((uploadStatus.current / uploadStatus.total) * 100)}%</span>
                       </div>
                       <Progress value={(uploadStatus.current / uploadStatus.total) * 100} className="h-2" />
+                  </div>
+              </div>
+          </div>
+      )}
+
+      {/* Context Menu */}
+      {contextMenu && (
+          <div 
+            className="fixed z-50 min-w-[160px] bg-popover text-popover-foreground rounded-md border border-border shadow-md animate-in fade-in duration-200"
+            style={{ top: contextMenu.y, left: contextMenu.x }}
+            onClick={(e) => e.stopPropagation()} // Prevent closing when clicking inside
+          >
+              <div className="p-1">
+                  {contextMenu.type === "folder" ? (
+                       <div 
+                         className="flex items-center gap-2 px-2 py-1.5 text-sm rounded-sm hover:bg-accent hover:text-accent-foreground cursor-pointer"
+                         onClick={() => {
+                             handleNavigate(contextMenu.itemKey);
+                             setContextMenu(null);
+                         }}
+                       >
+                           <Folder size={14} /> Open
+                       </div>
+                  ) : (
+                       <div 
+                         className="flex items-center gap-2 px-2 py-1.5 text-sm rounded-sm hover:bg-accent hover:text-accent-foreground cursor-pointer"
+                         onClick={() => {
+                             handleDownload(contextMenu.itemKey);
+                             setContextMenu(null);
+                         }}
+                       >
+                           <Download size={14} /> Download
+                       </div>
+                  )}
+                  
+                  <div className="h-px bg-border my-1" />
+                  
+                  <div 
+                     className="flex items-center gap-2 px-2 py-1.5 text-sm rounded-sm hover:bg-destructive hover:text-white text-destructive cursor-pointer"
+                     onClick={() => {
+                         handleDelete();
+                         setContextMenu(null);
+                     }}
+                  >
+                        <Trash2 size={14} /> Delete
                   </div>
               </div>
           </div>
