@@ -291,3 +291,48 @@ pub async fn upload_file(bucket: String, key: String, path: String, state: State
 
     Ok(())
 }
+
+#[tauri::command]
+pub async fn read_text_file(bucket: String, key: String, state: State<'_, AppState>) -> Result<String, String> {
+    let client = {
+        let guard = state.client.lock().unwrap();
+        guard.as_ref().ok_or("Client not initialized")?.clone()
+    };
+
+    let resp = client.get_object()
+        .bucket(bucket)
+        .key(key)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    // Check size first to avoid crashing on huge files
+    if resp.content_length() > Some(1024 * 1024 * 5) { // 5MB limit for preview
+        return Err("File too large for preview".to_string());
+    }
+
+    let data = resp.body.collect().await.map_err(|e| e.to_string())?.into_bytes();
+    let text = String::from_utf8(data.to_vec()).map_err(|_| "File is not valid text".to_string())?;
+
+    Ok(text)
+}
+
+#[tauri::command]
+pub async fn get_presigned_url(bucket: String, key: String, state: State<'_, AppState>) -> Result<String, String> {
+    let client = {
+        let guard = state.client.lock().unwrap();
+        guard.as_ref().ok_or("Client not initialized")?.clone()
+    };
+
+    let presigning_config = aws_sdk_s3::presigning::PresigningConfig::expires_in(std::time::Duration::from_secs(3600))
+        .map_err(|e| e.to_string())?;
+
+    let presigned_req = client.get_object()
+        .bucket(bucket)
+        .key(key)
+        .presigned(presigning_config)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    Ok(presigned_req.uri().to_string())
+}

@@ -2,10 +2,10 @@ import { useState, useEffect } from "react";
 import { Button } from "./components/ui/button";
 import { Input } from "./components/ui/input";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "./components/ui/table";
-import { initR2Client, listBuckets, listObjects, uploadObject, downloadObject, createFolder, deleteObjects, deletePrefix, getBucketStats } from "./services/r2Service";
+import { initR2Client, listBuckets, listObjects, uploadObject, downloadObject, createFolder, deleteObjects, deletePrefix, getBucketStats, readTextFile, getPresignedUrl } from "./services/r2Service";
 import { open, save, message } from "@tauri-apps/plugin-dialog";
 import { getCurrentWindow } from "@tauri-apps/api/window"; // Add this import
-import { Folder, File, Download, Trash2, Upload, ChevronRight, Home, ArrowUp, RefreshCw, FolderPlus } from "lucide-react";
+import { Folder, File, Download, Trash2, Upload, ChevronRight, Home, ArrowUp, RefreshCw, FolderPlus, X, FileText, EyeOff } from "lucide-react";
 import { Checkbox } from "@/components/ui/checkbox"
 import { Progress } from "@/components/ui/progress"
 
@@ -26,6 +26,15 @@ function App() {
   const [loading, setLoading] = useState(false);
   const [statsLoading, setStatsLoading] = useState(false);
   const [bucketStats, setBucketStats] = useState<{size: number, count: number, bucket: string} | null>(null);
+  
+  // Preview State
+  const [preview, setPreview] = useState<{
+      key: string;
+      type: 'image' | 'text' | 'code' | 'none';
+      content: string | null; // URL for image, Text for text
+      loading: boolean;
+      error?: string;
+  } | null>(null);
 
   // Browser State
   const [currentBucket, setCurrentBucket] = useState<string>("");
@@ -377,6 +386,38 @@ function App() {
       setLastSelectedKey(key);
   }
 
+  const getFileType = (fileName: string): 'image' | 'text' | 'code' | 'none' => {
+      const ext = fileName.split('.').pop()?.toLowerCase() || '';
+      const images = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp', 'ico'];
+      const text = ['txt', 'md', 'log', 'csv', 'ini', 'cfg', 'conf', 'env'];
+      const code = ['json', 'js', 'ts', 'jsx', 'tsx', 'rs', 'html', 'css', 'xml', 'yml', 'yaml', 'py', 'go', 'java', 'c', 'cpp', 'h'];
+
+      if (images.includes(ext)) return 'image';
+      if (text.includes(ext)) return 'text';
+      if (code.includes(ext)) return 'code';
+      return 'none';
+  }
+
+  const loadPreview = async (bucket: string, key: string) => {
+      const type = getFileType(key); // We pass the full key, but usually extension is at end
+      
+      setPreview({ key, type, content: null, loading: true });
+
+      try {
+          if (type === 'image') {
+              const url = await getPresignedUrl(bucket, key);
+              setPreview({ key, type, content: url, loading: false });
+          } else if (type === 'text' || type === 'code') {
+              const text = await readTextFile(bucket, key);
+              setPreview({ key, type, content: text, loading: false });
+          } else {
+              setPreview({ key, type: 'none', content: null, loading: false });
+          }
+      } catch (error) {
+          setPreview({ key, type, content: null, loading: false, error: (error as Error).toString() });
+      }
+  }
+
   const handleRowClick = (key: string, e: React.MouseEvent) => {
       // Prevent selection when clicking directly on interactive elements handled elsewhere
       // (Though usually we handle this by e.stopPropagation on the child)
@@ -402,14 +443,6 @@ function App() {
               const start = Math.min(lastIdx, currentIdx);
               const end = Math.max(lastIdx, currentIdx);
               
-              // If we want to ADD to selection or REPLACE?
-              // Windows Explorer usually replaces the selection with the range,
-              // unless Ctrl is also held (but Ctrl+Shift is rare).
-              // Let's assume standard Shift click replaces selection with range
-              // BUT keeps the anchor? No, standard is range replaces.
-              
-              // Actually, standard behavior often keeps previous "others" if you used ctrl before?
-              // Let's do simple: Shift click sets selection to the range.
               newSelection = new Set();
               for(let i = start; i <= end; i++) {
                   newSelection.add(allItems[i]);
@@ -425,6 +458,23 @@ function App() {
       }
 
       setSelection(newSelection);
+
+      // Trigger Preview if single file selected
+      if (newSelection.size === 1) {
+          const selectedKey = Array.from(newSelection)[0];
+          // Check if it's a file (not in folders list)
+          const isFile = files.some(f => f.key === selectedKey);
+          if (isFile) {
+             // Avoid reloading if already showing
+             if (preview?.key !== selectedKey) {
+                 loadPreview(currentBucket, selectedKey);
+             }
+          } else {
+              setPreview(null);
+          }
+      } else {
+          setPreview(null);
+      }
   }
 
   const toggleAll = (forceSelect = false) => {
@@ -563,138 +613,192 @@ function App() {
             </div>
          )}
 
-         {/* File List */}
-         <div className="flex-1 overflow-hidden flex flex-col">
-             {!currentBucket ? (
-                 <div className="flex-1 flex flex-col items-center justify-center text-muted-foreground animate-in fade-in duration-500">
-                     <div className="w-16 h-16 bg-accent rounded-full flex items-center justify-center mb-4">
-                         <ArrowUp size={32} className="opacity-50" />
+         {/* File List & Preview Split */}
+         <div className="flex-1 overflow-hidden flex flex-row">
+             {/* Main Table Area */}
+             <div className="flex-1 flex flex-col min-w-0 overflow-hidden border-r border-border"> 
+                 {!currentBucket ? (
+                     <div className="flex-1 flex flex-col items-center justify-center text-muted-foreground animate-in fade-in duration-500">
+                         <div className="w-16 h-16 bg-accent rounded-full flex items-center justify-center mb-4">
+                             <ArrowUp size={32} className="opacity-50" />
+                         </div>
+                         <p>Select a bucket to start browsing</p>
                      </div>
-                     <p>Select a bucket to start browsing</p>
-                 </div>
-             ) : (
-                <div className="flex-1 overflow-auto">
-                    <Table>
-                        <TableHeader className="sticky top-0 bg-background z-10 shadow-sm">
-                        <TableRow className="hover:bg-transparent">
-                            <TableHead className="w-[40px]">
-                                <Checkbox 
-                                    checked={files.length + folders.length > 0 && selection.size === files.length + folders.length}
-                                    onCheckedChange={toggleAll}
-                                />
-                            </TableHead>
-                            <TableHead className="w-[40px]"></TableHead>
-                            <TableHead>Name</TableHead>
-                            <TableHead className="w-[120px]">Size</TableHead>
-                            <TableHead className="w-[180px]">Last Modified</TableHead>
-                            <TableHead className="w-[80px]"></TableHead>
-                        </TableRow>
-                        </TableHeader>
-                        <TableBody>
-                        {/* Parent Folder Link */}
-                        {currentPath && (
-                            <TableRow 
-                                className="cursor-pointer hover:bg-muted/50"
-                                onClick={handleNavigateUp}
-                            >
-                                <TableCell></TableCell>
-                                <TableCell><Folder size={18} className="text-muted-foreground" /></TableCell>
-                                <TableCell className="font-medium text-muted-foreground">..</TableCell>
-                                <TableCell></TableCell>
-                                <TableCell></TableCell>
-                                <TableCell></TableCell>
+                 ) : (
+                    <div className="flex-1 overflow-auto">
+                        <Table>
+                            <TableHeader className="sticky top-0 bg-background z-10 shadow-sm">
+                            <TableRow className="hover:bg-transparent">
+                                <TableHead className="w-[40px]">
+                                    <Checkbox 
+                                        checked={files.length + folders.length > 0 && selection.size === files.length + folders.length}
+                                        onCheckedChange={toggleAll}
+                                    />
+                                </TableHead>
+                                <TableHead className="w-[40px]"></TableHead>
+                                <TableHead>Name</TableHead>
+                                <TableHead className="w-[120px]">Size</TableHead>
+                                <TableHead className="w-[180px]">Last Modified</TableHead>
+                                <TableHead className="w-[80px]"></TableHead>
                             </TableRow>
-                        )}
-                        
-                        {/* Folder List */}
-                        {folders.map((folder) => {
-                            const displayName = folder.key.replace(currentPath, "").replace("/", "");
-                            const isSelected = selection.has(folder.key);
-                            return (
+                            </TableHeader>
+                            <TableBody>
+                            {/* Parent Folder Link */}
+                            {currentPath && (
                                 <TableRow 
-                                    key={folder.key} 
-                                    className={`group cursor-pointer ${isSelected ? "bg-accent/50 selected" : ""}`}
-                                    onClick={(e) => handleRowClick(folder.key, e)}
-                                    onContextMenu={(e) => handleContextMenu(e, folder.key, "folder")}
-                                    // Double click to navigate
-                                    onDoubleClick={(e) => {
-                                        e.preventDefault();
-                                        handleNavigate(folder.key);
-                                    }}
+                                    className="cursor-pointer hover:bg-muted/50"
+                                    onClick={handleNavigateUp}
                                 >
-                                    <TableCell onClick={(e) => { e.stopPropagation(); toggleSelection(folder.key); }}>
-                                        <Checkbox 
-                                            checked={isSelected}
-                                            // onCheckedChange handles click automatically
-                                        />
-                                    </TableCell>
-                                    <TableCell>
-                                        <Folder size={18} className="text-blue-500 fill-blue-500/20" />
-                                    </TableCell>
-                                    <TableCell className="font-medium">
-                                        {displayName}
-                                    </TableCell>
-                                    <TableCell className="text-muted-foreground">-</TableCell>
-                                    <TableCell className="text-muted-foreground">-</TableCell>
-                                    <TableCell>
-                                        <Button variant="ghost" size="icon" className="h-8 w-8 opacity-0 group-hover:opacity-100" onClick={(e) => { e.stopPropagation(); handleDelete(); }}>
-                                             {/* <Trash2 size={14} className="text-muted-foreground hover:text-destructive" /> */}
-                                        </Button>
-                                    </TableCell>
+                                    <TableCell></TableCell>
+                                    <TableCell><Folder size={18} className="text-muted-foreground" /></TableCell>
+                                    <TableCell className="font-medium text-muted-foreground">..</TableCell>
+                                    <TableCell></TableCell>
+                                    <TableCell></TableCell>
+                                    <TableCell></TableCell>
                                 </TableRow>
-                            )
-                        })}
-
-                        {/* File List */}
-                        {files.map((file) => {
-                             const displayName = file.key.replace(currentPath, "");
-                             const isSelected = selection.has(file.key);
-                             return (
-                                <TableRow 
-                                    key={file.key} 
-                                    className={`group cursor-pointer ${isSelected ? "bg-accent/50 selected" : ""}`}
-                                    onClick={(e) => handleRowClick(file.key, e)}
-                                    onContextMenu={(e) => handleContextMenu(e, file.key, "file")}
-                                >
-                                    <TableCell onClick={(e) => { e.stopPropagation(); toggleSelection(file.key); }}>
-                                        <Checkbox 
-                                            checked={isSelected}
-                                            // onCheckedChange handled by parent click or explicit logic if needed, but simple checkbox click propagation works for toggle
-                                        />
-                                    </TableCell>
-                                    <TableCell>
-                                        <File size={18} className="text-muted-foreground" />
-                                    </TableCell>
-                                    <TableCell className="font-medium">{displayName}</TableCell>
-                                    <TableCell className="text-muted-foreground text-xs">
-                                        {formatBytes(file.size || 0)}
-                                    </TableCell>
-                                    <TableCell className="text-muted-foreground text-xs">
-                                        {file.lastModified?.toLocaleDateString()}
-                                    </TableCell>
-                                    <TableCell>
-                                        <div className="flex items-center opacity-0 group-hover:opacity-100 transition-opacity">
-                                            <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => handleDownload(file.key)}>
-                                                <Download size={14} />
+                            )}
+                            
+                            {/* Folder List */}
+                            {folders.map((folder) => {
+                                const displayName = folder.key.replace(currentPath, "").replace("/", "");
+                                const isSelected = selection.has(folder.key);
+                                return (
+                                    <TableRow 
+                                        key={folder.key} 
+                                        className={`group cursor-pointer ${isSelected ? "bg-accent/50 selected" : ""}`}
+                                        onClick={(e) => handleRowClick(folder.key, e)}
+                                        onContextMenu={(e) => handleContextMenu(e, folder.key, "folder")}
+                                        // Double click to navigate
+                                        onDoubleClick={(e) => {
+                                            e.preventDefault();
+                                            handleNavigate(folder.key);
+                                        }}
+                                    >
+                                        <TableCell onClick={(e) => { e.stopPropagation(); toggleSelection(folder.key); }}>
+                                            <Checkbox 
+                                                checked={isSelected}
+                                                // onCheckedChange handles click automatically
+                                            />
+                                        </TableCell>
+                                        <TableCell>
+                                            <Folder size={18} className="text-blue-500 fill-blue-500/20" />
+                                        </TableCell>
+                                        <TableCell className="font-medium">
+                                            {displayName}
+                                        </TableCell>
+                                        <TableCell className="text-muted-foreground">-</TableCell>
+                                        <TableCell className="text-muted-foreground">-</TableCell>
+                                        <TableCell>
+                                            <Button variant="ghost" size="icon" className="h-8 w-8 opacity-0 group-hover:opacity-100" onClick={(e) => { e.stopPropagation(); handleDelete(); }}>
+                                                {/* <Trash2 size={14} className="text-muted-foreground hover:text-destructive" /> */}
                                             </Button>
-                                        </div>
+                                        </TableCell>
+                                    </TableRow>
+                                )
+                            })}
+
+                            {/* File List */}
+                            {files.map((file) => {
+                                const displayName = file.key.replace(currentPath, "");
+                                const isSelected = selection.has(file.key);
+                                return (
+                                    <TableRow 
+                                        key={file.key} 
+                                        className={`group cursor-pointer ${isSelected ? "bg-accent/50 selected" : ""}`}
+                                        onClick={(e) => handleRowClick(file.key, e)}
+                                        onContextMenu={(e) => handleContextMenu(e, file.key, "file")}
+                                    >
+                                        <TableCell onClick={(e) => { e.stopPropagation(); toggleSelection(file.key); }}>
+                                            <Checkbox 
+                                                checked={isSelected}
+                                                // onCheckedChange handled by parent click or explicit logic if needed, but simple checkbox click propagation works for toggle
+                                            />
+                                        </TableCell>
+                                        <TableCell>
+                                            <File size={18} className="text-muted-foreground" />
+                                        </TableCell>
+                                        <TableCell className="font-medium">{displayName}</TableCell>
+                                        <TableCell className="text-muted-foreground text-xs">
+                                            {formatBytes(file.size || 0)}
+                                        </TableCell>
+                                        <TableCell className="text-muted-foreground text-xs">
+                                            {file.lastModified?.toLocaleDateString()}
+                                        </TableCell>
+                                        <TableCell>
+                                            <div className="flex items-center opacity-0 group-hover:opacity-100 transition-opacity">
+                                                <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => handleDownload(file.key)}>
+                                                    <Download size={14} />
+                                                </Button>
+                                            </div>
+                                        </TableCell>
+                                    </TableRow>
+                                )
+                            })}
+                            
+                            {files.length === 0 && folders.length === 0 && (
+                                <TableRow>
+                                    <TableCell colSpan={6} className="h-32 text-center text-muted-foreground">
+                                        Empty folder
                                     </TableCell>
                                 </TableRow>
-                             )
-                        })}
-                        
-                        {files.length === 0 && folders.length === 0 && (
-                             <TableRow>
-                                 <TableCell colSpan={6} className="h-32 text-center text-muted-foreground">
-                                     Empty folder
-                                 </TableCell>
-                             </TableRow>
-                        )}
-                        </TableBody>
-                    </Table>
-                </div>
+                            )}
+                            </TableBody>
+                        </Table>
+                    </div>
+                 )}
+             </div>
+
+             {/* Preview Pane */}
+             {preview && (
+                 <div className="w-80 bg-background border-l border-border flex flex-col animate-in slide-in-from-right-10 duration-200 shadow-xl z-20">
+                     <div className="h-12 border-b border-border flex items-center justify-between px-4 bg-muted/20">
+                         <span className="font-semibold text-sm truncate max-w-[200px]">{preview.key.split('/').pop()}</span>
+                         <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => setPreview(null)}>
+                             <X size={16} />
+                         </Button>
+                     </div>
+                     <div className="flex-1 overflow-auto p-4 flex flex-col items-center">
+                         {preview.loading ? (
+                             <div className="flex-1 flex flex-col items-center justify-center text-muted-foreground gap-2">
+                                 <RefreshCw size={24} className="animate-spin" />
+                                 <span className="text-xs">Loading preview...</span>
+                             </div>
+                         ) : preview.error ? (
+                             <div className="flex-1 flex flex-col items-center justify-center text-destructive gap-2 text-center">
+                                 <EyeOff size={32} />
+                                 <span className="text-sm px-4">{preview.error}</span>
+                             </div>
+                         ) : (
+                             <>
+                                {preview.type === 'image' && preview.content && (
+                                    <div className="w-full h-full flex items-center justify-center bg-accent/20 rounded-lg overflow-hidden border border-border">
+                                        <img src={preview.content} alt="Preview" className="max-w-full max-h-full object-contain" />
+                                    </div>
+                                )}
+                                {(preview.type === 'text' || preview.type === 'code') && preview.content && (
+                                    <div className="w-full h-full bg-card border border-border rounded-md p-3 overflow-auto text-xs font-mono whitespace-pre-wrap">
+                                        {preview.content}
+                                    </div>
+                                )}
+                                {preview.type === 'none' && (
+                                     <div className="flex-1 flex flex-col items-center justify-center text-muted-foreground gap-2">
+                                        <FileText size={48} className="opacity-20" />
+                                        <span className="text-sm">No preview available</span>
+                                        <span className="text-xs text-muted-foreground">Type: {preview.key.split('.').pop()}</span>
+                                     </div>
+                                )}
+                             </>
+                         )}
+                     </div>
+                     <div className="p-4 border-t border-border bg-muted/10">
+                        <Button className="w-full gap-2" variant="secondary" onClick={() => handleDownload(preview.key)}>
+                            <Download size={16} /> Download File
+                        </Button>
+                     </div>
+                 </div>
              )}
          </div>
+
          {/* Footer Status */}
          <div className="h-8 border-t border-border bg-card px-4 flex items-center justify-between text-xs text-muted-foreground">
              <div>{files.length} files, {folders.length} folders</div>

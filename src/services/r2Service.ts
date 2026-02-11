@@ -58,3 +58,11 @@ export const getBucketStats = async (bucket: string) => {
   };
 };
 
+export const readTextFile = async (bucket: string, key: string) => {
+  return await invoke<string>("read_text_file", { bucket, key });
+};
+
+export const getPresignedUrl = async (bucket: string, key: string) => {
+  return await invoke<string>("get_presigned_url", { bucket, key });
+};
+
