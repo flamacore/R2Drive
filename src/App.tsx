@@ -6,7 +6,7 @@ import { initR2Client, listBuckets, listObjects, uploadObject, downloadObject, c
 import { open, save, message } from "@tauri-apps/plugin-dialog";
 import { getCurrentWindow } from "@tauri-apps/api/window"; // Add this import
 import { readDir, stat } from "@tauri-apps/plugin-fs"; // Add this import
-import { Folder, File, Download, Trash2, Upload, ChevronRight, Home, ArrowUp, RefreshCw, FolderPlus, X, FileText, EyeOff, Move, Pencil } from "lucide-react";
+import { Folder, File, Download, Trash2, Upload, ChevronRight, Home, ArrowUp, RefreshCw, FolderPlus, X, FileText, EyeOff, Move, Pencil, Sun, Moon, LogOut } from "lucide-react";
 import { Checkbox } from "@/components/ui/checkbox"
 import { Progress } from "@/components/ui/progress"
 
@@ -27,6 +27,25 @@ function App() {
   const [loading, setLoading] = useState(false);
   const [statsLoading, setStatsLoading] = useState(false);
   const [bucketStats, setBucketStats] = useState<{size: number, count: number, bucket: string} | null>(null);
+
+  // Theme State
+  const [theme, setTheme] = useState<"light" | "dark">(() => {
+    const saved = localStorage.getItem("theme");
+    if (saved === "dark" || saved === "light") return saved;
+    // Default to dark
+    return "dark";
+  });
+
+  useEffect(() => {
+    const root = window.document.documentElement;
+    root.classList.remove("light", "dark");
+    root.classList.add(theme);
+    localStorage.setItem("theme", theme);
+  }, [theme]);
+
+  const toggleTheme = () => {
+    setTheme(prev => prev === "light" ? "dark" : "light");
+  };
   
   // Preview State
   const [preview, setPreview] = useState<{
@@ -296,6 +315,19 @@ function App() {
       loadFiles(bucket, "");
       loadStats(bucket);
   }
+
+  const handleLogout = () => {
+    localStorage.removeItem("accountId");
+    localStorage.removeItem("accessKey");
+    localStorage.removeItem("secretKey");
+    setAccountId("");
+    setAccessKey("");
+    setSecretKey("");
+    setAuthenticated(false);
+    setBuckets([]);
+    setFiles([]);
+    setFolders([]);
+  };
 
   const handleNavigate = (folderKey: string) => {
       setCurrentPath(folderKey);
@@ -657,7 +689,12 @@ function App() {
   // Render Login
   if (!authenticated) {
     return (
-      <div className="flex items-center justify-center h-screen bg-background text-foreground">
+      <div className="flex items-center justify-center h-screen bg-background text-foreground relative">
+        <div className="absolute top-4 right-4 animate-in fade-in duration-500">
+            <Button variant="ghost" size="icon" onClick={toggleTheme}>
+                  {theme === "dark" ? <Sun size={18} /> : <Moon size={18} />}
+            </Button>
+        </div>
         <div className="w-96 space-y-6 p-8 bg-card rounded-xl border border-border shadow-lg">
           <div className="space-y-2 text-center">
              <h1 className="text-3xl font-bold tracking-tight">R2 Drive</h1>
@@ -708,8 +745,18 @@ function App() {
             ))}
             </ul>
           </div>
-          <div className="p-4 border-t border-border">
-              <div className="text-xs text-muted-foreground">Logged in as {accountId.substring(0, 8)}...</div>
+          <div className="p-4 border-t border-border flex items-center justify-between">
+              <div className="text-xs text-muted-foreground truncate w-20" title={accountId}>
+                {accountId.substring(0, 8)}...
+              </div>
+              <div className="flex items-center gap-1">
+                <Button variant="ghost" size="icon" className="h-7 w-7" onClick={toggleTheme} title="Toggle Theme">
+                    {theme === "dark" ? <Sun size={14} /> : <Moon size={14} />}
+                </Button>
+                <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-destructive" onClick={handleLogout} title="Logout">
+                    <LogOut size={14} />
+                </Button>
+              </div>
           </div>
       </div>
 
