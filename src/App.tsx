@@ -983,6 +983,19 @@ function App() {
          </div>
       </div>
 
+      {/* Blocking Loading Overlay */}
+      {loading && (
+        <div className="absolute inset-0 bg-background/60 backdrop-blur-sm z-[60] flex items-center justify-center animate-in fade-in duration-200 cursor-wait">
+            <div className="bg-card px-8 py-6 rounded-xl shadow-2xl border border-border flex flex-col items-center gap-4">
+                 <RefreshCw size={40} className="animate-spin text-primary" />
+                 <div className="flex flex-col items-center gap-1">
+                    <h3 className="font-semibold text-lg">Processing</h3>
+                    <p className="text-xs text-muted-foreground">Please wait...</p>
+                 </div>
+            </div>
+        </div>
+      )}
+
       {/* Drag Overlay */}
       {isDragging && (
         <div className="absolute inset-0 bg-primary/20 backdrop-blur-sm z-50 flex items-center justify-center border-4 border-primary border-dashed m-4 rounded-xl animate-in fade-in duration-200 pointer-events-none">
