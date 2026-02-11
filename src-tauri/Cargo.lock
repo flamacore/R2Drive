@@ -3592,6 +3592,7 @@ dependencies = [
  "tauri-plugin-fs",
  "tauri-plugin-opener",
  "tokio",
+ "urlencoding",
 ]
 
 [[package]]

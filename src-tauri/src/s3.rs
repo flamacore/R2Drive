@@ -4,6 +4,7 @@ use aws_sdk_s3::primitives::ByteStream;
 use std::collections::HashMap;
 use std::sync::Mutex;
 use tauri::State;
+use urlencoding::encode;
 
 pub struct AppState {
     pub client: Mutex<Option<Client>>,
@@ -335,4 +336,116 @@ pub async fn get_presigned_url(bucket: String, key: String, state: State<'_, App
         .map_err(|e| e.to_string())?;
 
     Ok(presigned_req.uri().to_string())
+}
+
+#[tauri::command]
+pub async fn copy_object(bucket: String, source: String, destination: String, state: State<'_, AppState>) -> Result<(), String> {
+    let client = {
+        let guard = state.client.lock().unwrap();
+        guard.as_ref().ok_or("Client not initialized")?.clone()
+    };
+
+    // AWS SDK copy_source must be URL encoded.
+    // We encode the key, but we ensure '/' remains '/' so S3 parses structure if needed, 
+    // although strictly speaking 'bucket/key' is the format.
+    // If the key itself contains slashes, likely we want to preserve them as path separators 
+    // in the signature calculation, but for the header value, fully encoding might be safer?
+    // Testing suggests that for 'bucket/folder/file', passing 'bucket/folder%2Ffile' works 
+    // if the key is 'folder/file'.
+    // Let's rely on full encoding of the key.
+    
+    let source_key_encoded = encode(&source).to_string();
+    let copy_source = format!("{}/{}", bucket, source_key_encoded);
+
+    client.copy_object()
+        .bucket(&bucket)
+        .copy_source(copy_source)
+        .key(&destination)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn rename_folder(
+    bucket: String,
+    old_prefix: String,
+    new_prefix: String,
+    state: State<'_, AppState>,
+) -> Result<usize, String> {
+    let client = {
+        let guard = state.client.lock().unwrap();
+        guard.as_ref().ok_or("Client not initialized")?.clone()
+    };
+
+    // 1. List all objects recursively
+    let mut continuation_token = None;
+    let mut keys_to_move = Vec::new();
+
+    loop {
+        let resp = client.list_objects_v2()
+            .bucket(&bucket)
+            .prefix(&old_prefix)
+            .set_continuation_token(continuation_token)
+            .send()
+            .await
+            .map_err(|e| e.to_string())?;
+
+        for obj in resp.contents() {
+            if let Some(k) = obj.key() {
+                keys_to_move.push(k.to_string());
+            }
+        }
+
+        if resp.is_truncated().unwrap_or(false) {
+            continuation_token = resp.next_continuation_token;
+        } else {
+            break;
+        }
+    }
+
+    if keys_to_move.is_empty() {
+        return Ok(0);
+    }
+
+    // 2. Copy Loop
+    let mut moved_count = 0;
+    for k in &keys_to_move {
+        // Replace prefix
+        let new_key = k.replacen(&old_prefix, &new_prefix, 1);
+        
+        let source_encoded = encode(k).to_string();
+        let copy_source = format!("{}/{}", bucket, source_encoded);
+
+        // Copy
+        let _ = client.copy_object()
+            .bucket(&bucket)
+            .copy_source(copy_source)
+            .key(new_key)
+            .send()
+            .await
+            .map_err(|e| format!("Failed to copy {}: {}", k, e))?;
+            
+        moved_count += 1;
+    }
+
+    // 3. Delete Old
+    let mut object_ids = Vec::new();
+    for k in keys_to_move {
+         object_ids.push(ObjectIdentifier::builder().key(k).build().unwrap());
+    }
+
+    for chunk in object_ids.chunks(1000) {
+         let delete = Delete::builder().set_objects(Some(chunk.to_vec())).build().unwrap();
+         client.delete_objects()
+             .bucket(&bucket)
+             .delete(delete)
+             .send()
+             .await
+             .map_err(|e| e.to_string())?;
+    }
+
+    Ok(moved_count)
 }

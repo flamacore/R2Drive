@@ -66,3 +66,11 @@ export const getPresignedUrl = async (bucket: string, key: string) => {
   return await invoke<string>("get_presigned_url", { bucket, key });
 };
 
+export const copyObject = async (bucket: string, source: string, destination: string) => {
+  await invoke("copy_object", { bucket, source, destination });
+};
+
+export const renameFolder = async (bucket: string, oldPrefix: string, newPrefix: string) => {
+  return await invoke<number>("rename_folder", { bucket, oldPrefix, newPrefix });
+};
+

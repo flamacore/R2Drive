@@ -2,10 +2,11 @@ import { useState, useEffect } from "react";
 import { Button } from "./components/ui/button";
 import { Input } from "./components/ui/input";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "./components/ui/table";
-import { initR2Client, listBuckets, listObjects, uploadObject, downloadObject, createFolder, deleteObjects, deletePrefix, getBucketStats, readTextFile, getPresignedUrl } from "./services/r2Service";
+import { initR2Client, listBuckets, listObjects, uploadObject, downloadObject, createFolder, deleteObjects, deletePrefix, getBucketStats, readTextFile, getPresignedUrl, copyObject, renameFolder } from "./services/r2Service";
 import { open, save, message } from "@tauri-apps/plugin-dialog";
 import { getCurrentWindow } from "@tauri-apps/api/window"; // Add this import
-import { Folder, File, Download, Trash2, Upload, ChevronRight, Home, ArrowUp, RefreshCw, FolderPlus, X, FileText, EyeOff } from "lucide-react";
+import { readDir, stat } from "@tauri-apps/plugin-fs"; // Add this import
+import { Folder, File, Download, Trash2, Upload, ChevronRight, Home, ArrowUp, RefreshCw, FolderPlus, X, FileText, EyeOff, Move, Pencil } from "lucide-react";
 import { Checkbox } from "@/components/ui/checkbox"
 import { Progress } from "@/components/ui/progress"
 
@@ -149,22 +150,59 @@ function App() {
   }, [authenticated, currentBucket, currentPath]);
 
   const processUploads = async (filePaths: string[]) => {
-      setUploadStatus({ total: filePaths.length, current: 0, filename: "", isActive: true });
+      setUploadStatus({ total: 0, current: 0, filename: "Scanning...", isActive: true });
+      
+      const allFiles: { path: string, relativeKey: string }[] = [];
+
+      // Recursive walker
+      const walk = async (path: string, baseRelative: string) => {
+          try {
+             const stats = await stat(path);
+             
+             if (stats.isDirectory) {
+                 const entries = await readDir(path);
+                 for (const entry of entries) {
+                     const separator = path.includes("\\") ? "\\" : "/";
+                     const name = entry.name;
+                     // Skip . and ..? plugin-fs doesn't return them usually
+                     const fullPath = `${path}${separator}${name}`;
+                     // If baseRelative is empty, we are at the root of the drop. 
+                     // e.g. dropped "MyFolder", baseRelative is "MyFolder".
+                     // entry "SubFile", newRelative "MyFolder/SubFile".
+                     const nextRelative = baseRelative ? `${baseRelative}/${name}` : name;
+                     
+                     await walk(fullPath, nextRelative);
+                 }
+             } else {
+                 allFiles.push({ path, relativeKey: baseRelative });
+             }
+          } catch(e) {
+              console.error("Failed to stat " + path, e);
+          }
+      }
+
+      // First pass: scan
+      for(const p of filePaths) {
+          const name = p.split(/[\\/]/).pop() || "unknown";
+          await walk(p, name);
+      }
+
+      setUploadStatus(prev => ({ ...prev, total: allFiles.length, filename: "Starting upload..." }));
+
       let successCount = 0;
       let failCount = 0;
       
-      for(let i = 0; i < filePaths.length; i++) {
-        const filePath = filePaths[i];
-        const fileName = filePath.split(/[\\/]/).pop() || "unknown";
-        setUploadStatus(prev => ({ ...prev, current: i + 1, filename: fileName }));
+      for(let i = 0; i < allFiles.length; i++) {
+        const item = allFiles[i];
+        setUploadStatus(prev => ({ ...prev, current: i + 1, filename: item.relativeKey }));
         
-        const fullKey = currentPath + fileName;
+        const fullKey = (currentPath || "") + item.relativeKey;
         try {
-            await uploadObject(currentBucket, fullKey, filePath);
+            await uploadObject(currentBucket, fullKey, item.path);
             successCount++;
         } catch (e) {
             failCount++;
-            console.error("Failed to upload " + fileName + ": " + e);
+            console.error("Failed to upload " + item.relativeKey + ": " + e);
         }
       }
       
@@ -306,6 +344,136 @@ function App() {
       await message("Download failed: " + (error as Error).message, { kind: 'error' });
     }
   };
+
+  const handleMove = async (destinationPath?: string, keysToMove?: Set<string>) => {
+       const targetKeys = keysToMove || selection;
+       if (targetKeys.size === 0) return;
+       
+       let targetPath = destinationPath;
+       
+       // If not provided (context menu/button), ask user
+       if (targetPath === undefined) {
+           targetPath = prompt("Enter destination folder path (relative to bucket root):", currentPath) || undefined;
+           if (targetPath === undefined) return; // Cancelled
+       }
+       
+       // Normalize target
+       if (targetPath && !targetPath.endsWith("/")) targetPath += "/";
+       if (targetPath === currentPath) return; // No op
+
+       setLoading(true);
+       try {
+           const items = Array.from(targetKeys);
+           for (const key of items) {
+               const fileName = key.split('/').pop();
+               if (!fileName) continue;
+               
+               const isFolder = folders.some(f => f.key === key);
+               if (isFolder) {
+                   // Simple folder move not supported yet without recursive list
+                   console.log("Folder move skipped: " + key);
+                   continue;
+               }
+
+               const newKey = (targetPath || "") + fileName;
+               
+               // Copy
+               await copyObject(currentBucket, key, newKey);
+               // Delete
+               await deleteObjects(currentBucket, [key]);
+           }
+           
+           loadFiles(currentBucket, currentPath);
+           setSelection(new Set());
+       } catch (e) {
+           await message("Move failed: " + e, { kind: 'error' });
+       } finally {
+           setLoading(false);
+       }
+  }
+
+  const handleDragStart = (e: React.DragEvent, key: string) => {
+      const draggingKeys = selection.has(key) ? Array.from(selection) : [key];
+      e.dataTransfer.setData("application/r2-keys", JSON.stringify(draggingKeys));
+      e.dataTransfer.effectAllowed = "move";
+  }
+
+  const handleDragOver = (e: React.DragEvent) => {
+      if (e.dataTransfer.types.includes("application/r2-keys")) {
+          e.preventDefault();
+          e.dataTransfer.dropEffect = "move";
+      }
+  }
+
+  const handleDropInternal = async (e: React.DragEvent, targetFolderKey: string) => {
+      e.preventDefault();
+      e.stopPropagation(); // Prevent global drop
+      const data = e.dataTransfer.getData("application/r2-keys");
+      if (!data) return;
+      
+      try {
+          const sourceKeys = JSON.parse(data) as string[];
+          // Prevent moving into self? S3 paths don't care, but logic might.
+          // Since we move FILES, dragging file into folder is fine.
+          
+          if (confirm(`Move ${sourceKeys.length} items to ${targetFolderKey}?`)) {
+               await handleMove(targetFolderKey, new Set(sourceKeys));
+          }
+      } catch(ex) {}
+  }
+
+  const handleRename = async (key: string) => {
+      // Get old name, handling trailing slashes for folders
+      const pathParts = key.split('/');
+      let oldName = pathParts.pop();
+      if (oldName === "" && pathParts.length > 0) {
+          oldName = pathParts.pop();
+      }
+      
+      if (!oldName) return;
+
+      const newName = prompt("Enter new name:", oldName);
+      if (!newName || newName === oldName) return;
+
+      const isFolder = folders.some(f => f.key === key);
+      
+      setLoading(true);
+      try {
+          if (isFolder) {
+              const oldPrefix = key; // Should end in /
+              // Construct new prefix
+              // If key is "photos/2023/" and we rename "2023" to "2024"
+              // key="photos/2023/", oldName="2023" (actually split might be empty if trailing slashes)
+              
+              const parts = key.split('/');
+              // if ends with /, last part is empty
+              if (parts[parts.length - 1] === "") parts.pop(); 
+              parts.pop(); // remove old folder name
+              parts.push(newName);
+              const newPrefix = parts.join('/') + "/";
+              
+              await renameFolder(currentBucket, oldPrefix, newPrefix);
+          } else {
+              // Rename File Logic
+              const parts = key.split('/');
+              parts.pop(); // Remove old name
+              parts.push(newName);
+              const newKey = parts.join('/');
+
+              // Copy
+              await copyObject(currentBucket, key, newKey);
+              // Delete
+              await deleteObjects(currentBucket, [key]);
+          }
+
+          loadFiles(currentBucket, currentPath);
+          setSelection(new Set());
+      } catch (e) {
+          await message("Rename failed: " + e, { kind: 'error' });
+      } finally {
+          setLoading(false);
+      }
+  }
 
   const handleDelete = async () => {
     if (selection.size === 0) return;
@@ -597,6 +765,9 @@ function App() {
                      <Button size="sm" variant="outline" onClick={handleCreateFolder} className="gap-2">
                          <FolderPlus size={16} /> New Folder
                      </Button>
+                     <Button size="sm" variant="outline" onClick={() => handleMove()} disabled={selection.size === 0} className="gap-2">
+                         <Move size={16} /> Move
+                     </Button>
                  </div>
                  
                  <div className="flex items-center gap-2">
@@ -665,6 +836,10 @@ function App() {
                                 return (
                                     <TableRow 
                                         key={folder.key} 
+                                        draggable
+                                        onDragStart={(e) => handleDragStart(e, folder.key)}
+                                        onDragOver={handleDragOver}
+                                        onDrop={(e) => handleDropInternal(e, folder.key)}
                                         className={`group cursor-pointer ${isSelected ? "bg-accent/50 selected" : ""}`}
                                         onClick={(e) => handleRowClick(folder.key, e)}
                                         onContextMenu={(e) => handleContextMenu(e, folder.key, "folder")}
@@ -704,6 +879,8 @@ function App() {
                                 return (
                                     <TableRow 
                                         key={file.key} 
+                                        draggable
+                                        onDragStart={(e) => handleDragStart(e, file.key)}
                                         className={`group cursor-pointer ${isSelected ? "bg-accent/50 selected" : ""}`}
                                         onClick={(e) => handleRowClick(file.key, e)}
                                         onContextMenu={(e) => handleContextMenu(e, file.key, "file")}
@@ -868,6 +1045,27 @@ function App() {
                        </div>
                   )}
                   
+                  <div 
+                     className="flex items-center gap-2 px-2 py-1.5 text-sm rounded-sm hover:bg-accent hover:text-accent-foreground cursor-pointer"
+                     onClick={() => {
+                         handleMove(undefined, new Set([contextMenu.itemKey]));
+                         setContextMenu(null);
+                     }}
+                  >
+                        <Move size={14} /> Move
+                  </div>
+
+                  {/* Always show rename for both files and folders now */}
+                  <div 
+                    className="flex items-center gap-2 px-2 py-1.5 text-sm rounded-sm hover:bg-accent hover:text-accent-foreground cursor-pointer"
+                    onClick={() => {
+                        handleRename(contextMenu.itemKey);
+                        setContextMenu(null);
+                    }}
+                    >
+                        <Pencil size={14} /> Rename
+                    </div>
+
                   <div className="h-px bg-border my-1" />
                   
                   <div 

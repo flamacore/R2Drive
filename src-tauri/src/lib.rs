@@ -30,7 +30,9 @@ pub fn run() {
             s3::upload_file,
             s3::download_file,
             s3::read_text_file,
-            s3::get_presigned_url
+            s3::get_presigned_url,
+            s3::copy_object,
+            s3::rename_folder
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
